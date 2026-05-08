@@ -1,5 +1,11 @@
 # @firfi/huly-mcp
 
+## 0.10.3
+
+### Patch Changes
+
+- Rebuild the published package artifact so contact responses include workbench URLs.
+
 ## 0.10.2
 
 ### Patch Changes
