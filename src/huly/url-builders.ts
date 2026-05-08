@@ -4,13 +4,19 @@
  * The Huly web app routes documents as:
  *   <baseUrl>/workbench/<workspaceUrlSlug>/document/<title-slug>-<id>
  *
+ * Persons and organizations both route through the contact path:
+ *   <baseUrl>/workbench/<workspaceUrlSlug>/contact/<id>
+ *
  * `workspaceUrlSlug` comes from `WorkspaceLoginInfo.workspaceUrl` on the
  * account-client (not the `WorkspaceUuid` — that's a different identifier and
  * loops back to the login screen when used in URLs).
  *
+ * The same `DocumentUrlConfig` (baseUrl + workspaceUrlSlug) is reused for
+ * contact URLs since both kinds of link share those two inputs.
+ *
  * @module
  */
-import type { DocumentId, WorkspaceUrlSlug } from "../domain/schemas/shared.js"
+import type { DocumentId, OrganizationId, PersonId, WorkspaceUrlSlug } from "../domain/schemas/shared.js"
 import { UrlString } from "../domain/schemas/shared.js"
 
 export interface DocumentUrlConfig {
@@ -58,3 +64,23 @@ export const buildDocumentUrl = (
 
 export const buildDocumentUrlFromConfig = (config: DocumentUrlConfig, title: string, id: DocumentId): UrlString =>
   buildDocumentUrl(config.baseUrl, config.workspaceUrlSlug, title, id)
+
+/**
+ * Build a Huly web-app URL for a person or organization. Both share the
+ * `<baseUrl>/workbench/<workspaceUrlSlug>/contact/<id>` shape; no slug step
+ * is needed because the contact id is the only path-sensitive component.
+ * Trailing slashes on `baseUrl` are tolerated.
+ */
+export const buildContactUrl = (
+  baseUrl: UrlString,
+  workspaceUrlSlug: WorkspaceUrlSlug,
+  id: OrganizationId | PersonId
+): UrlString => {
+  const trimmedBase = baseUrl.replace(/\/+$/, "")
+  return UrlString.make(`${trimmedBase}/workbench/${workspaceUrlSlug}/contact/${id}`)
+}
+
+export const buildContactUrlFromConfig = (
+  config: DocumentUrlConfig,
+  id: OrganizationId | PersonId
+): UrlString => buildContactUrl(config.baseUrl, config.workspaceUrlSlug, id)
