@@ -11,7 +11,12 @@
  * @module
  */
 import type { ChatMessage, DirectMessage as HulyDirectMessage } from "@hcengineering/chunter"
-import type { Employee as HulyEmployee } from "@hcengineering/contact"
+import type {
+  Channel as HulyContactChannel,
+  Employee as HulyEmployee,
+  Person,
+  SocialIdentity
+} from "@hcengineering/contact"
 import {
   type AccountUuid as HulyAccountUuid,
   type AttachedData,
@@ -19,10 +24,11 @@ import {
   type DocumentUpdate,
   generateId,
   type Ref,
+  SocialIdType,
   SortingOrder,
   type Space
 } from "@hcengineering/core"
-import { Clock, Effect } from "effect"
+import { Clock, Effect, Schema } from "effect"
 
 import type { MessageSummary } from "../../domain/schemas/channels.js"
 import type {
@@ -37,18 +43,25 @@ import type {
   UpdateDmMessageParams,
   UpdateDmMessageResult
 } from "../../domain/schemas/direct-messages.js"
-import { ChannelId, type DirectMessageIdentifier, MessageId, PersonName } from "../../domain/schemas/shared.js"
+import {
+  ChannelId,
+  type DirectMessageIdentifier,
+  Email,
+  MessageId,
+  PersonName,
+  type PersonRefInput
+} from "../../domain/schemas/shared.js"
 import { HulyClient, type HulyClientError } from "../client.js"
 import {
   CannotDirectMessageSelfError,
   DirectMessageIdentifierAmbiguousError,
   DirectMessageNotFoundError,
   MessageNotFoundError,
+  PersonIdentifierAmbiguousError,
   PersonNotAnEmployeeError,
   PersonNotFoundError
 } from "../errors.js"
 import { buildSocialIdToPersonNameMap } from "./channels.js"
-import { findPersonByEmailOrName } from "./contacts-shared.js"
 import { markdownToMarkupString, markupToMarkdownString } from "./markup.js"
 import { clampLimit } from "./query-helpers.js"
 import { toRef } from "./sdk-boundary.js"
@@ -74,6 +87,7 @@ type DeleteDmMessageError = UpdateDmMessageError
 
 type CreateDirectMessageError =
   | HulyClientError
+  | PersonIdentifierAmbiguousError
   | PersonNotFoundError
   | PersonNotAnEmployeeError
   | CannotDirectMessageSelfError
@@ -81,6 +95,16 @@ type CreateDirectMessageError =
 // --- Helpers ---
 
 const ONE_TO_ONE_DM_MEMBER_COUNT = 2
+const isEmailIdentifier = Schema.is(Email)
+
+const sortedMemberPair = (first: HulyAccountUuid, second: HulyAccountUuid): Array<HulyAccountUuid> =>
+  [first, second].sort()
+
+const hasExactMembers = (dm: HulyDirectMessage, sortedMembers: ReadonlyArray<HulyAccountUuid>): boolean => {
+  const dmMembers = [...dm.members].sort()
+  return dmMembers.length === sortedMembers.length
+    && sortedMembers.every((member, index) => dmMembers[index] === member)
+}
 
 /**
  * Resolve a `dm` identifier to a Huly DirectMessage document.
@@ -314,17 +338,83 @@ export const deleteDirectMessage = (
  * UUID; non-employee Persons (external contacts, unaccepted invites) have no
  * `personUuid` and cannot be DM'd.
  */
+const findPersonByExactEmail = (
+  client: HulyClient["Type"],
+  email: Email
+): Effect.Effect<Person | undefined, HulyClientError | PersonIdentifierAmbiguousError> =>
+  Effect.gen(function*() {
+    const socialIdentity = yield* client.findOne<SocialIdentity>(
+      contact.class.SocialIdentity,
+      {
+        type: SocialIdType.EMAIL,
+        value: email
+      }
+    )
+
+    if (socialIdentity !== undefined) {
+      return yield* client.findOne<Person>(
+        contact.class.Person,
+        { _id: socialIdentity.attachedTo }
+      )
+    }
+
+    const channels = yield* client.findAll<HulyContactChannel>(
+      contact.class.Channel,
+      {
+        value: email,
+        provider: contact.channelProvider.Email
+      }
+    )
+
+    const personIds = [...new Set(channels.map((channel) => channel.attachedTo))]
+    if (personIds.length === 0) {
+      return undefined
+    }
+
+    if (personIds.length > 1) {
+      return yield* new PersonIdentifierAmbiguousError({ identifier: email, matches: personIds.length })
+    }
+
+    return yield* client.findOne<Person>(
+      contact.class.Person,
+      { _id: toRef<Person>(personIds[0]) }
+    )
+  })
+
+const findPersonByExactName = (
+  client: HulyClient["Type"],
+  name: PersonName
+): Effect.Effect<Person | undefined, HulyClientError | PersonIdentifierAmbiguousError> =>
+  Effect.gen(function*() {
+    const persons = yield* client.findAll<Person>(
+      contact.class.Person,
+      { name }
+    )
+
+    if (persons.length === 0) {
+      return undefined
+    }
+
+    if (persons.length > 1) {
+      return yield* new PersonIdentifierAmbiguousError({ identifier: name, matches: persons.length })
+    }
+
+    return persons[0]
+  })
+
 const resolveEmployeeAccount = (
-  identifier: string
+  identifier: PersonRefInput
 ): Effect.Effect<
   HulyAccountUuid,
-  HulyClientError | PersonNotFoundError | PersonNotAnEmployeeError,
+  HulyClientError | PersonIdentifierAmbiguousError | PersonNotFoundError | PersonNotAnEmployeeError,
   HulyClient
 > =>
   Effect.gen(function*() {
     const client = yield* HulyClient
 
-    const person = yield* findPersonByEmailOrName(client, identifier)
+    const person = isEmailIdentifier(identifier)
+      ? yield* findPersonByExactEmail(client, identifier)
+      : yield* findPersonByExactName(client, identifier)
     if (person === undefined) {
       return yield* new PersonNotFoundError({ identifier })
     }
@@ -369,10 +459,8 @@ export const createDirectMessage = (
       { members: me }
     )
 
-    const existing = existingDms.find((dm) =>
-      dm.members.length === ONE_TO_ONE_DM_MEMBER_COUNT
-      && dm.members.includes(other)
-    )
+    const members = sortedMemberPair(me, other)
+    const existing = existingDms.find((dm) => hasExactMembers(dm, members))
 
     if (existing !== undefined) {
       return { id: ChannelId.make(existing._id), created: false }
@@ -384,7 +472,7 @@ export const createDirectMessage = (
       description: "",
       private: true,
       archived: false,
-      members: [me, other].sort()
+      members
     }
 
     yield* client.createDoc(
