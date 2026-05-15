@@ -94,6 +94,26 @@ Add the standard config to your Windsurf MCP configuration file.
 
 </details>
 
+<details>
+<summary>OpenCode</summary>
+
+Open the global configuration file (`~/.config/opencode/opencode.json`) and add this config to the `mcp` section.
+
+```json
+"huly": {
+      "type": "local",
+      "command": ["npx", "-y", "@firfi/huly-mcp@latest"],
+      "environment": {
+        "HULY_URL": "https://huly.app",
+        "HULY_EMAIL": "your@email.com",
+        "HULY_PASSWORD": "yourpassword",
+        "HULY_WORKSPACE": "yourworkspace"
+      }
+    }
+```
+
+</details>
+
 ## Updating
 
 The `@latest` tag in the install command always fetches the newest version. Most MCP clients cache the installed package, so you need to force a re-fetch:
